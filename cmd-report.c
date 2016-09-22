@@ -9,6 +9,7 @@
 #include "utils/symbol.h"
 #include "utils/list.h"
 #include "utils/fstack.h"
+#include "utils/filter.h"
 
 
 enum {
@@ -117,7 +118,20 @@ static void build_function_tree(struct ftrace_file_handle *handle,
 	int i;
 
 	while (read_rstack(handle, &task) >= 0) {
+		struct ftrace_trigger tr = {
+			.flags = 0,
+		};
+
 		rstack = task->rstack;
+
+		if (rstack->type == FTRACE_ENTRY) {
+			if (fstack_entry(task, rstack, &tr) < 0)
+				continue;
+
+			fstack = &task->func_stack[task->stack_count - 1];
+			fstack_update(FTRACE_ENTRY, task, fstack);
+		}
+
 		if (rstack->type != FTRACE_EXIT)
 			continue;
 
@@ -139,6 +153,10 @@ static void build_function_tree(struct ftrace_file_handle *handle,
 		sym = find_symtabs(&sess->symtabs, rstack->addr);
 
 		fstack = &task->func_stack[task->stack_count];
+		if ((fstack->flags & FSTACK_FL_NORECORD) || !fstack_enabled)
+			goto next;
+
+		fstack_update(FTRACE_EXIT, task, fstack);
 
 		te.pid = task->tid;
 		te.sym = sym;
@@ -160,6 +178,9 @@ static void build_function_tree(struct ftrace_file_handle *handle,
 		}
 
 		insert_entry(root, &te, false);
+
+	next:
+		fstack_exit(task);
 	}
 }
 
@@ -946,6 +967,16 @@ int command_report(int argc, char *argv[], struct opts *opts)
 
 		if (opts->kernel == 1)
 			opts->kernel_skip_out = true;
+	}
+
+	if (opts->filter || opts->trigger) {
+		if (setup_fstack_filters(opts->filter, opts->trigger) < 0) {
+			pr_err_ns("failed to set filter or trigger: %s%s%s\n",
+				  opts->filter ?: "",
+				  (opts->filter && opts->trigger) ? " or " : "",
+				  opts->trigger ?: "");
+			return -1;
+		}
 	}
 
 	if (opts->tid)

@@ -43,6 +43,21 @@ OPTIONS
 -K, \--kernel-full
 :   Trace kernel functions as well as user functions.  All kernel functions will be shown.
 
+-F *FUNC*, \--filter=*FUNC*
+:   Set filter to show selected functions only.  This option can be used more than once.  See `uftrace-replay` for filters.
+
+-N *FUNC*, \--notrace=*FUNC*
+:   Set filter not to show selected functions (and their children).  This option can be used more than once.  See `uftrace-replay` for filters.
+
+-T *TRG*, \--trigger=*TRG*
+:   Set trigger on selected functions.  This option can be used more than once.  See `uftrace-replay` for triggers.
+
+\--tid=*TID*[,*TID*,...]
+:   Only show result from given threads.
+
+-D *DEPTH*, \--depth *DEPTH*
+:   Set trace limit in nesting level.
+
 
 EXAMPLE
 =======
@@ -120,4 +135,4 @@ In the above example, the result was sorted by percentage of difference of self 
 
 SEE ALSO
 ========
-`uftrace`(1), `uftrace-record`(1)
+`uftrace`(1), `uftrace-record`(1), `uftrace-replay`(1)
