@@ -303,6 +303,43 @@ static void pr_retval(struct fstack_arguments *args)
 	}
 }
 
+static bool check_fstack_filter(struct ftrace_task_handle *task)
+{
+	struct ftrace_ret_stack *frs = &task->ustack;
+	struct fstack *fstack;
+
+	if (frs->type == FTRACE_ENTRY) {
+		struct ftrace_trigger tr = {
+			.flags = 0,
+		};
+
+		fstack = &task->func_stack[task->stack_count++];
+
+		if (fstack_entry(task, frs, &tr) < 0)
+			return false;
+
+		fstack_update(FTRACE_ENTRY, task, fstack);
+	}
+	else if (frs->type == FTRACE_EXIT) {
+		fstack = &task->func_stack[--task->stack_count];
+
+		if (unlikely(task->stack_count < 0)) {
+			task->stack_count = 0;
+			fstack = &task->func_stack[0];
+		}
+
+		if ((fstack->flags & FSTACK_FL_NORECORD) || !fstack_enabled) {
+			fstack_exit(task);
+			return false;
+		}
+
+		fstack_update(FTRACE_EXIT, task, fstack);
+		fstack_exit(task);
+	}
+
+	return true;
+}
+
 static void dump_raw(int argc, char *argv[], struct opts *opts,
 		     struct ftrace_file_handle *handle)
 {
@@ -366,6 +403,9 @@ static void dump_raw(int argc, char *argv[], struct opts *opts,
 			}
 			prev_time = frs->time;
 
+			if (!check_fstack_filter(task))
+				goto next;
+
 			sess = find_task_session(tid, frs->time);
 			if (sess) {
 				symtabs = &sess->symtabs;
@@ -397,10 +437,11 @@ static void dump_raw(int argc, char *argv[], struct opts *opts,
 				} else
 					abort();
 			}
+			symbol_putname(sym, name);
 
+next:
 			/* force re-read in get_task_ustack() */
 			task->valid = false;
-			symbol_putname(sym, name);
 		}
 	}
 
@@ -556,6 +597,9 @@ static void dump_chrome_trace(int argc, char *argv[], struct opts *opts,
 			task = &handle->tasks[i];
 			frs = &task->ustack;
 
+			if (!check_fstack_filter(task))
+				goto next;
+
 			sess = find_task_session(tid, frs->time);
 			if (sess) {
 				symtabs = &sess->symtabs;
@@ -571,9 +615,11 @@ static void dump_chrome_trace(int argc, char *argv[], struct opts *opts,
 
 			last_comma = true;
 
+			symbol_putname(sym, name);
+
+next:
 			/* force re-read in get_task_ustack() */
 			task->valid = false;
-			symbol_putname(sym, name);
 		}
 	}
 
@@ -651,6 +697,16 @@ int command_dump(int argc, char *argv[], struct opts *opts)
 		if (setup_kernel_data(&kern) == 0) {
 			handle.kern = &kern;
 			load_kernel_symbol();
+		}
+	}
+
+	if (opts->filter || opts->trigger) {
+		if (setup_fstack_filters(opts->filter, opts->trigger) < 0) {
+			pr_err_ns("failed to set filter or trigger: %s%s%s\n",
+				  opts->filter ?: "",
+				  (opts->filter && opts->trigger) ? " or " : "",
+				  opts->trigger ?: "");
+			return -1;
 		}
 	}
 

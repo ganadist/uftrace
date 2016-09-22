@@ -23,6 +23,27 @@ OPTIONS
 \--chrome
 :   Show JSON style output used by Google chrome tracing facility.
 
+-k, \--kernel
+:   Show dump of kernel functions as well as user functions.
+
+-K, \--kernel-full
+:   Show dump of kernel functions only.
+
+-F *FUNC*, \--filter=*FUNC*
+:   Set filter to dump selected functions only.  This option can be used more than once.  See `uftrace-replay` for filters.
+
+-N *FUNC*, \--notrace=*FUNC*
+:   Set filter not to dump selected functions (and their children).  This option can be used more than once.  See `uftrace-replay` for filters.
+
+-T *TRG*, \--trigger=*TRG*
+:   Set trigger on selected functions.  This option can be used more than once.  See `uftrace-replay` for triggers.
+
+\--tid=*TID*[,*TID*,...]
+:   Only dump functions from given threads.  To see the list of threads in the data file, you can use `uftrace-report --threads` or `uftrace-info` command.
+
+-D *DEPTH*, \--depth *DEPTH*
+:   Set trace limit in nesting level.
+
 
 EXAMPLE
 =======
