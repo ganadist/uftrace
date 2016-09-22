@@ -309,7 +309,6 @@ static void dump_raw(int argc, char *argv[], struct opts *opts,
 	int i;
 	uint64_t prev_time;
 	uint64_t file_offset = 0;
-	struct ftrace_task_handle task;
 
 	pr_out("ftrace file header: magic         = ");
 	for (i = 0; i < UFTRACE_MAGIC_LEN; i++)
@@ -339,30 +338,24 @@ static void dump_raw(int argc, char *argv[], struct opts *opts,
 	for (i = 0; i < handle->info.nr_tid; i++) {
 		int tid = handle->info.tids[i];
 
+		/* dump kernel functions only (for -K option) */
 		if (opts->kernel == 2)
-			continue;
-
-		setup_task_handle(handle, &task, tid);
-
-		if (task.fp == NULL)
 			continue;
 
 		prev_time = 0;
 		file_offset = 0;
 		pr_out("reading %d.dat\n", tid);
-		while (!read_task_ustack(handle, &task) && !ftrace_done) {
-			struct ftrace_ret_stack *frs = &task.ustack;
-			struct ftrace_session *sess = find_task_session(tid, frs->time);
+		while (get_task_ustack(handle, i) && !ftrace_done) {
+			struct ftrace_ret_stack *frs;
+			struct ftrace_session *sess;
+			struct ftrace_task_handle *task;
 			struct symtabs *symtabs;
 			struct sym *sym = NULL;
 			char *name;
 
-			if (sess) {
-				symtabs = &sess->symtabs;
-				sym = find_symtabs(symtabs, frs->addr);
-			}
-
-			name = symbol_getname(sym, frs->addr);
+			/* this should be after calling get_task_ustack() */
+			task = &handle->tasks[i];
+			frs = &task->ustack;
 
 			if (prev_time > frs->time) {
 				pr_red("\n");
@@ -372,6 +365,14 @@ static void dump_raw(int argc, char *argv[], struct opts *opts,
 				pr_red("\n");
 			}
 			prev_time = frs->time;
+
+			sess = find_task_session(tid, frs->time);
+			if (sess) {
+				symtabs = &sess->symtabs;
+				sym = find_symtabs(symtabs, frs->addr);
+			}
+
+			name = symbol_getname(sym, frs->addr);
 
 			pr_time(frs->time);
 			pr_out("%5d: [%s] %s(%lx) depth: %u\n",
@@ -384,21 +385,21 @@ static void dump_raw(int argc, char *argv[], struct opts *opts,
 				if (frs->type == FTRACE_ENTRY) {
 					pr_time(frs->time);
 					pr_out("%5d: [%s] length = %d\n", tid, "args ",
-							task.args.len);
-					pr_args(&task.args);
-					pr_hex(&file_offset, task.args.data, task.args.len);
+							task->args.len);
+					pr_args(&task->args);
+					pr_hex(&file_offset, task->args.data, task->args.len);
 				} else if (frs->type == FTRACE_EXIT) {
 					pr_time(frs->time);
 					pr_out("%5d: [%s] length = %d\n", tid, "retval",
-							task.args.len);
-					pr_retval(&task.args);
-					pr_hex(&file_offset, task.args.data, task.args.len);
+							task->args.len);
+					pr_retval(&task->args);
+					pr_hex(&file_offset, task->args.data, task->args.len);
 				} else
 					abort();
 			}
 
-			/* force re-read in read_task_ustack() */
-			task.valid = false;
+			/* force re-read in get_task_ustack() */
+			task->valid = false;
 			symbol_putname(sym, name);
 		}
 	}
@@ -526,10 +527,10 @@ static void dump_chrome_trace(int argc, char *argv[], struct opts *opts,
 			      struct ftrace_file_handle *handle)
 {
 	int i;
-	struct ftrace_task_handle task;
 	char buf[PATH_MAX];
 	struct stat statbuf;
 	unsigned lost_event_cnt = 0;
+	struct ftrace_task_handle *task;
 
 	/* read recorded date and time */
 	snprintf(buf, sizeof(buf), "%s/info", opts->dirname);
@@ -543,19 +544,19 @@ static void dump_chrome_trace(int argc, char *argv[], struct opts *opts,
 	for (i = 0; i < handle->info.nr_tid; i++) {
 		int tid = handle->info.tids[i];
 
-		setup_task_handle(handle, &task, tid);
-
-		if (task.fp == NULL)
-			continue;
-
-		while (!read_task_ustack(handle, &task) && !ftrace_done) {
-			struct ftrace_ret_stack *frs = &task.ustack;
-			struct ftrace_session *sess = find_task_session(tid, frs->time);
+		while (get_task_ustack(handle, i) && !ftrace_done) {
+			struct ftrace_ret_stack *frs;
+			struct ftrace_session *sess;
 			struct symtabs *symtabs;
 			struct sym *sym = NULL;
 			char *name;
 			static bool last_comma = false;
 
+			/* this should be after calling get_task_ustack() */
+			task = &handle->tasks[i];
+			frs = &task->ustack;
+
+			sess = find_task_session(tid, frs->time);
 			if (sess) {
 				symtabs = &sess->symtabs;
 				sym = find_symtabs(symtabs, frs->addr);
@@ -566,12 +567,12 @@ static void dump_chrome_trace(int argc, char *argv[], struct opts *opts,
 			if (last_comma)
 				pr_out(",\n");
 
-			print_ustack_chrome_trace(&task, frs, tid, name);
+			print_ustack_chrome_trace(task, frs, tid, name);
 
 			last_comma = true;
 
-			/* force re-read in read_task_ustack() */
-			task.valid = false;
+			/* force re-read in get_task_ustack() */
+			task->valid = false;
 			symbol_putname(sym, name);
 		}
 	}
@@ -602,7 +603,7 @@ static void dump_chrome_trace(int argc, char *argv[], struct opts *opts,
 				lost_event_cnt++;
 			}
 
-			print_kstack_chrome_trace(&task, mrs, name);
+			print_kstack_chrome_trace(task, mrs, name);
 			last_comma = true;
 
 			symbol_putname(sym, name);
@@ -653,10 +654,16 @@ int command_dump(int argc, char *argv[], struct opts *opts)
 		}
 	}
 
+	if (opts->tid)
+		setup_task_filter(opts->tid, &handle);
+
 	if (opts->chrome_trace)
 		dump_chrome_trace(argc, argv, opts, &handle);
 	else
 		dump_raw(argc, argv, opts, &handle);
+
+	if (handle.kern)
+		finish_kernel_data(handle.kern);
 
 	close_data_file(opts, &handle);
 
