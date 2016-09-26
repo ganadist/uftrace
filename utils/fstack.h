@@ -30,6 +30,11 @@ enum context {
 	FSTACK_CTX_KERNEL	= 2,
 };
 
+struct ftrace_ret_stack_list {
+	struct list_head list;
+	struct ftrace_ret_stack rstack;
+};
+
 struct ftrace_task_handle {
 	int tid;
 	bool valid;
@@ -43,8 +48,11 @@ struct ftrace_task_handle {
 	struct ftrace_ret_stack ustack;
 	struct ftrace_ret_stack kstack;
 	struct ftrace_ret_stack *rstack;
+	struct list_head rstack_list;
+	struct list_head rstack_unused;
 	int stack_count;
 	int lost_count;
+	int list_count;  /* number of saved rstack in the rstack_list */
 	int user_stack_count;
 	int display_depth;
 	int user_display_depth;
@@ -104,6 +112,7 @@ int read_task_ustack(struct ftrace_file_handle *handle,
 int read_task_args(struct ftrace_task_handle *task,
 		   struct ftrace_ret_stack *rstack,
 		   bool is_retval);
+void invalidate_first_rstack(struct ftrace_task_handle *task);
 
 void setup_task_filter(char *tid_filter, struct ftrace_file_handle *handle);
 int setup_fstack_filters(char *filter_str, char *trigger_str);

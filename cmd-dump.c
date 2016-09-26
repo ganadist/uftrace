@@ -441,6 +441,7 @@ static void dump_raw(int argc, char *argv[], struct opts *opts,
 
 next:
 			/* force re-read in get_task_ustack() */
+			invalidate_first_rstack(task);
 			task->valid = false;
 		}
 	}
@@ -619,6 +620,7 @@ static void dump_chrome_trace(int argc, char *argv[], struct opts *opts,
 
 next:
 			/* force re-read in get_task_ustack() */
+			invalidate_first_rstack(task);
 			task->valid = false;
 		}
 	}

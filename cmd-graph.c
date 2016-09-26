@@ -488,6 +488,7 @@ static int build_graph(struct opts *opts, struct ftrace_file_handle *handle, cha
 next:
 			/* force re-read in read_task_ustack() */
 			task->valid = false;
+			invalidate_first_rstack(task);
 			symbol_putname(sym, name);
 		}
 	}

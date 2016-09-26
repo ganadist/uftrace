@@ -60,12 +60,16 @@ void setup_task_handle(struct ftrace_file_handle *handle,
 
 	free(filename);
 
+	task->list_count = 0;
 	task->stack_count = 0;
 	task->column_index = -1;
 	task->filter.depth = handle->depth;
 
 	max_stack = handle->hdr.max_stack;
 	task->func_stack = xcalloc(1, sizeof(*task->func_stack) * max_stack);
+
+	INIT_LIST_HEAD(&task->rstack_list);
+	INIT_LIST_HEAD(&task->rstack_unused);
 
 	/* FIXME: save filter depth at fork() and restore */
 	for (i = 0; i < max_stack; i++)
@@ -768,6 +772,64 @@ int read_task_ustack(struct ftrace_file_handle *handle,
 	return 0;
 }
 
+/* returns rstack after time filter applied */
+static struct ftrace_ret_stack * get_first_rstack(struct ftrace_task_handle *task)
+{
+	struct ftrace_ret_stack_list *entry;
+
+	assert(task->list_count > 0);
+
+	entry = list_first_entry(&task->rstack_list, typeof(*entry), list);
+	memcpy(&task->ustack, &entry->rstack, sizeof(entry->rstack));
+
+	return &task->ustack;
+}
+
+void invalidate_first_rstack(struct ftrace_task_handle *task)
+{
+	struct ftrace_ret_stack_list *entry;
+
+	if (task->h->time_filter == 0)
+		return;
+
+	assert(task->list_count > 0);
+
+	entry = list_first_entry(&task->rstack_list, typeof(*entry), list);
+	list_move_tail(&entry->list, &task->rstack_unused);
+	task->list_count--;
+}
+
+static void add_to_rstack_list(struct ftrace_task_handle *task)
+{
+	struct ftrace_ret_stack_list *entry;
+	struct ftrace_ret_stack *rstack = &task->ustack;
+
+	if (!list_empty(&task->rstack_unused)) {
+		entry = list_first_entry(&task->rstack_unused,
+					 typeof(*entry), list);
+		list_del(&entry->list);
+	}
+	else {
+		entry = xmalloc(sizeof(*entry));
+	}
+
+	memcpy(&entry->rstack, rstack, sizeof(*rstack));
+
+	list_add_tail(&entry->list, &task->rstack_list);
+	task->list_count++;
+}
+
+static void delete_last_rstack_list(struct ftrace_task_handle *task)
+{
+	struct ftrace_ret_stack_list *entry;
+
+	assert(task->list_count > 0);
+
+	entry = list_last_entry(&task->rstack_list, typeof(*entry), list);
+	list_move(&entry->list, &task->rstack_unused);
+	task->list_count--;
+}
+
 /**
  * get_task_ustack - read task's user function record
  * @handle: file handle
@@ -781,13 +843,17 @@ get_task_ustack(struct ftrace_file_handle *handle, int idx)
 {
 	struct ftrace_task_handle *task;
 
-	if (unlikely(idx >= handle->nr_tasks)) {
-		handle->nr_tasks = idx + 1;
+	if (unlikely(handle->nr_tasks < handle->info.nr_tid)) {
+		int i;
+
+		handle->nr_tasks = handle->info.nr_tid;
 		handle->tasks = xrealloc(handle->tasks,
 					 sizeof(*handle->tasks) * handle->nr_tasks);
 
-		setup_task_handle(handle, &handle->tasks[idx],
-				  handle->info.tids[idx]);
+		for (i = 0; i < handle->info.nr_tid; i++) {
+			setup_task_handle(handle, &handle->tasks[i],
+					  handle->info.tids[i]);
+		}
 
 		if (handle->tasks[idx].fp == NULL)
 			return NULL;
@@ -795,10 +861,61 @@ get_task_ustack(struct ftrace_file_handle *handle, int idx)
 
 	task = &handle->tasks[idx];
 
-	if (read_task_ustack(handle, task) < 0)
+	if (!handle->time_filter) {
+		if (read_task_ustack(handle, task) < 0)
+			return NULL;
+		return &task->ustack;
+	}
+
+	if (task->list_count)
+		goto out;
+
+	/*
+	 * read task (user) stack until it founds an entry that exceeds
+	 * the given time threshold (-t option).
+	 */
+	while (read_task_ustack(handle, task) == 0) {
+		struct ftrace_ret_stack_list *last;
+		struct ftrace_ret_stack *curr = &task->ustack;
+
+		task->valid = false;
+
+		if (task->ustack.type == FTRACE_ENTRY) {
+			/* it needs to wait until matching exit found */
+			add_to_rstack_list(task);
+		}
+		else if (task->ustack.type == FTRACE_EXIT) {
+			uint64_t delta;
+
+			/* it's already passed time filter, just return */
+			if (task->list_count == 0) {
+				add_to_rstack_list(task);
+				break;
+			}
+
+			last = list_last_entry(&task->rstack_list,
+					       typeof(*last), list);
+			delta = curr->time - last->rstack.time;
+
+			if (delta < handle->time_filter)
+				delete_last_rstack_list(task);
+			else {
+				add_to_rstack_list(task);
+				break;
+			}
+		}
+		else {
+			add_to_rstack_list(task);
+			/* TODO: handle LOST properly */
+			break;
+		}
+	}
+	if (task->done && task->list_count == 0)
 		return NULL;
 
-	return &task->ustack;
+out:
+	task->valid = true;
+	return get_first_rstack(task);
 }
 
 static int read_user_stack(struct ftrace_file_handle *handle,
@@ -865,8 +982,10 @@ static int __read_rstack(struct ftrace_file_handle *handle,
 user:
 		task = *taskp;
 
-		if (invalidate)
+		if (invalidate) {
+			invalidate_first_rstack(task);
 			task->valid = false;
+		}
 
 		task->rstack = &task->ustack;
 
