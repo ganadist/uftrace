@@ -196,6 +196,38 @@ static void func_lost(struct ftrace_task_handle *task)
 		task->func_stack[i].valid = false;
 }
 
+static bool check_fstack_filter(struct ftrace_task_handle *task)
+{
+	struct ftrace_ret_stack *frs = &task->ustack;
+	struct fstack *fstack;
+
+	if (frs->type == FTRACE_ENTRY) {
+		struct ftrace_trigger tr = {
+			.flags = 0,
+		};
+
+		fstack = &task->func_stack[task->stack_count - 1];
+
+		if (fstack_entry(task, frs, &tr) < 0)
+			return false;
+
+		fstack_update(FTRACE_ENTRY, task, fstack);
+	}
+	else if (frs->type == FTRACE_EXIT) {
+		fstack = &task->func_stack[task->stack_count];
+
+		if ((fstack->flags & FSTACK_FL_NORECORD) || !fstack_enabled) {
+			fstack_exit(task);
+			return false;
+		}
+
+		fstack_update(FTRACE_EXIT, task, fstack);
+		fstack_exit(task);
+	}
+
+	return true;
+}
+
 static int start_graph(struct uftrace_graph *graph,
 		       struct ftrace_task_handle *task)
 {
@@ -339,9 +371,6 @@ static void print_graph_node(struct uftrace_graph *graph,
 	    parent->head.prev == &node->list)
 		indent_mask[orig_indent - 1] = false;
 
-	if (depth == 1)
-		goto out;
-
 	needs_line = (node->nr_edges > 1);
 	list_for_each_entry(child, &node->head, list) {
 		print_graph_node(graph, child, depth - 1, indent_mask, indent,
@@ -355,7 +384,6 @@ static void print_graph_node(struct uftrace_graph *graph,
 		}
 	}
 
-out:
 	indent_mask[orig_indent] = false;
 	pr_dbg2("del mask (%d) for %s\n", orig_indent, symname);
 
@@ -444,6 +472,9 @@ static int build_graph(struct opts *opts, struct ftrace_file_handle *handle, cha
 					task->func_stack[d].valid = false;
 			}
 
+			if (!check_fstack_filter(task))
+				goto next;
+
 			if (graph->enabled)
 				add_graph(graph, task);
 
@@ -494,6 +525,16 @@ int command_graph(int argc, char *argv[], struct opts *opts)
 		if (setup_kernel_data(&kern) == 0) {
 			handle.kern = &kern;
 			load_kernel_symbol();
+		}
+	}
+
+	if (opts->filter || opts->trigger) {
+		if (setup_fstack_filters(opts->filter, opts->trigger) < 0) {
+			pr_err_ns("failed to set filter or trigger: %s%s%s\n",
+				  opts->filter ?: "",
+				  (opts->filter && opts->trigger) ? " or " : "",
+				  opts->trigger ?: "");
+			return -1;
 		}
 	}
 
