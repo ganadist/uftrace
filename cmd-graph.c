@@ -389,30 +389,27 @@ static void print_graph(struct uftrace_graph *graph, struct opts *opts)
 static int build_graph(struct opts *opts, struct ftrace_file_handle *handle, char *func)
 {
 	int i, ret = 0;
-	struct ftrace_task_handle task;
+	struct ftrace_task_handle *task;
 	struct uftrace_graph *graph;
 	uint64_t prev_time;
 
 	setup_graph_list(func);
 
 	for (i = 0; i < handle->info.nr_tid; i++) {
-		int tid = handle->info.tids[i];
-
-		setup_task_handle(handle, &task, tid);
-
-		if (task.fp == NULL)
-			continue;
-
 		prev_time = 0;
 
-		while (!read_task_ustack(handle, &task) && !ftrace_done) {
-			struct ftrace_ret_stack *frs = &task.ustack;
+		while (get_task_ustack(handle, i) && !ftrace_done) {
+			struct ftrace_ret_stack *frs;
 			struct sym *sym = NULL;
 			char *name;
 
-			graph = get_graph(&task);
+			/* this should be after calling get_task_ustack() */
+			task = &handle->tasks[i];
+			frs = &task->ustack;
+
+			graph = get_graph(task);
 			if (graph == NULL) {
-				pr_log("cannot find graph\n");
+				pr_log("cannot find graph for task %d\n", task->tid);
 				return -1;
 			}
 
@@ -420,11 +417,11 @@ static int build_graph(struct opts *opts, struct ftrace_file_handle *handle, cha
 			name = symbol_getname(sym, frs->addr);
 
 			if (frs->type == FTRACE_ENTRY)
-				func_enter(&task);
+				func_enter(task);
 			else if (frs->type == FTRACE_EXIT)
-				func_exit(&task);
+				func_exit(task);
 			else if (frs->type == FTRACE_LOST)
-				func_lost(&task);
+				func_lost(task);
 
 			if (prev_time > frs->time) {
 				pr_log("inverted time: broken data?\n");
@@ -432,34 +429,34 @@ static int build_graph(struct opts *opts, struct ftrace_file_handle *handle, cha
 			}
 			prev_time = frs->time;
 
-			if (task.stack_count >= opts->max_stack)
+			if (task->stack_count >= opts->max_stack)
 				goto next;
 
-			if (task.stack_count < 0) {
+			if (task->stack_count < 0) {
 				int d = frs->depth;;
 
 				/*
 				 * If we're returned from fork(),
 				 * the stack count of the child is -1.
 				 */
-				task.stack_count = d;
+				task->stack_count = d;
 				while (--d >= 0)
-					task.func_stack[d].valid = false;
+					task->func_stack[d].valid = false;
 			}
 
 			if (graph->enabled)
-				add_graph(graph, &task);
+				add_graph(graph, task);
 
 			if (!strcmp(name, func)) {
 				if (frs->type == FTRACE_ENTRY)
-					start_graph(graph, &task);
+					start_graph(graph, task);
 				else if (frs->type == FTRACE_EXIT)
-					end_graph(graph, &task);
+					end_graph(graph, task);
 			}
 
 next:
 			/* force re-read in read_task_ustack() */
-			task.valid = false;
+			task->valid = false;
 			symbol_putname(sym, name);
 		}
 	}
@@ -499,6 +496,9 @@ int command_graph(int argc, char *argv[], struct opts *opts)
 			load_kernel_symbol();
 		}
 	}
+
+	if (opts->tid)
+		setup_task_filter(opts->tid, &handle);
 
 	fstack_prepare_fixup();
 
